@@ -1,5 +1,6 @@
 from functools import wraps
 from datetime import timedelta
+from operator import itemgetter
 
 
 impactCalcs = {
@@ -15,7 +16,7 @@ impactCalcs = {
 duration_normaliser = {
     'days': lambda x: x,
     'weeks': lambda x: timedelta(weeks=x).days,
-    'months': lambda x: 30 * x
+    'month': lambda x: 30 * x
 }
 
 
@@ -133,10 +134,10 @@ def dollarInFlight(estimator):
             data['data']['timeToElapse'])
 
         impact = {
-            'dollar_in_flight': impactCalcs['DIF'](infections_by_requested_time, avg_daily_income, avg_daily_income_population, timeToElapse)
+            'dollarsInFlight': impactCalcs['DIF'](infections_by_requested_time, avg_daily_income, avg_daily_income_population, timeToElapse)
         }
         severeImpact = {
-            'dollar_in_flight': impactCalcs['DIF'](infections_by_requested_time_severe, avg_daily_income, avg_daily_income_population, timeToElapse)
+            'dollarsInFlight': impactCalcs['DIF'](infections_by_requested_time_severe, avg_daily_income, avg_daily_income_population, timeToElapse)
         }
 
         data['impact'] = {**data['impact'], **impact}
