@@ -10,7 +10,7 @@ impactCalcs = {
     'HBBRT': lambda x, y: int((x * .35) - y),
     'CFICUBRT': lambda x: int(x * .05),
     'CFVBRT': lambda x: int(x * .02),
-    'DIF': lambda x, y, z, r: round(x * y * z * r, 2)
+    'DIF': lambda x, y, z, r: round((x * y * z) / r, 2)
 }
 
 duration_normaliser = {
