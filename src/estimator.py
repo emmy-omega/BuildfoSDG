@@ -63,7 +63,7 @@ impactCalcs = {
         impact.hospitalBedsByRequestedTime,
         impact.casesForICUByRequestedTime,
         impact.casesForVentilatorsByRequestedTime,
-        int(round(impact.infectionsByRequestedTime * income * population / time, 0)))
+        int((impact.infectionsByRequestedTime * income * population / time)))
 }
 
 # Normalizes period as days
