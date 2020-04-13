@@ -1,18 +1,72 @@
 from functools import wraps
 from datetime import timedelta
 from operator import itemgetter
+from collections import namedtuple
 
+# feilds for the nameTuples that will constitute the estimate(output)
+region_fields = ['name', 'avgAge',
+                 'avgDailyIncomeInUSD', 'avgDailyIncomePopulation']
+impact_fields = ['currentlyInfected', 'infectionsByRequestedTime', 'severeCasesByRequestedTime',
+                 'hospitalBedsByRequestedTime', 'casesForICUByRequestedTime', 'casesForVentilatorsByRequestedTime', 'dollarsInFlight']
+data_fields = ['region', 'periodType', 'timeToElapse',
+               'reportedCases', 'totalHospitalBeds', 'population']
+estimate_fields = ['data', 'impact', 'severeImpact']
 
+'''
+nameedTuples for esay access and to minimize keyError/s
+'''
+Region = namedtuple('Region', region_fields,
+                    defaults=(None,) * len(region_fields))
+Impact = namedtuple('Impact', impact_fields,
+                    defaults=(None,) * len(impact_fields))
+Data = namedtuple('Data', data_fields, defaults=(None,) * len(data_fields))
+Estimate = namedtuple('Estimate', estimate_fields,
+                      defaults=(Data(), Impact(), Impact()))
+
+''' 
+dict (improvised switch) of estimate calculations.
+each returns new updated Impact namedTuple which is used to construct
+and updates Estimate namedTuple
+'''
 impactCalcs = {
-    'CI': lambda x, y: x * y,
-    'IBRT': lambda x, y: x * int(2**int(y / 3)),
-    'SCBRT': lambda x: int(x * .15),
-    'HBBRT': lambda x, y: int((x * .35) - y),
-    'CFICUBRT': lambda x: int(x * .05),
-    'CFVBRT': lambda x: int(x * .02),
-    'DIF': lambda x, y, z, r: int((x * y * z) / r)
+    'CI': lambda reportedCases, multiplier: Impact(
+        reportedCases * multiplier),
+    'IBRT': lambda impact, timeElapse: Impact(
+        impact.currentlyInfected,
+        impact.currentlyInfected * int(2**int(timeElapse / 3))),
+    'SCBRT': lambda impact: Impact(
+        impact.currentlyInfected,
+        impact.infectionsByRequestedTime,
+        int(impact.infectionsByRequestedTime * .15)),
+    'HBBRT': lambda impact, hospitalBeds: Impact(
+        impact.currentlyInfected,
+        impact.infectionsByRequestedTime,
+        impact.severeCasesByRequestedTime,
+        int((hospitalBeds * .35) - impact.severeCasesByRequestedTime)),
+    'CFICUBRT': lambda impact: Impact(
+        impact.currentlyInfected,
+        impact.infectionsByRequestedTime,
+        impact.severeCasesByRequestedTime,
+        impact.hospitalBedsByRequestedTime,
+        int(impact.infectionsByRequestedTime * .05)),
+    'CFVBRT': lambda impact: Impact(
+        impact.currentlyInfected,
+        impact.infectionsByRequestedTime,
+        impact.severeCasesByRequestedTime,
+        impact.hospitalBedsByRequestedTime,
+        impact.casesForICUByRequestedTime,
+        int(impact.infectionsByRequestedTime * .02)),
+    'DIF': lambda impact, income, population, time: Impact(
+        impact.currentlyInfected,
+        impact.infectionsByRequestedTime,
+        impact.severeCasesByRequestedTime,
+        impact.hospitalBedsByRequestedTime,
+        impact.casesForICUByRequestedTime,
+        impact.casesForVentilatorsByRequestedTime,
+        int(round(impact.infectionsByRequestedTime * income * population / time, 0)))
 }
 
+# Normalizes period as days
 duration_normaliser = {
     'days': lambda x: x,
     'weeks': lambda x: timedelta(weeks=x).days,
@@ -20,150 +74,145 @@ duration_normaliser = {
 }
 
 
+def init(estimator):
+    '''
+    Initialize estimation by structure the data into a Data namedTuple
+    '''
+    @wraps(estimator)
+    def wrapper(data):
+        data = Data(
+            Region(**data['region']),
+            data['periodType'],
+            data['timeToElapse'],
+            data['reportedCases'],
+            data['totalHospitalBeds'],
+            data['population']
+        )
+        return estimator(data)
+    return wrapper
+
+
 def currentlyInfected(estimator):
     @wraps(estimator)
     def wrapper(data):
-        reported_cases = data['data']['reportedCases']
-        data.update({
-            'impact': {
-                'currentlyInfected': impactCalcs['CI'](reported_cases, 10)
-            },
-            'severeImpact': {
-                'currentlyInfected': impactCalcs['CI'](reported_cases, 50)
-            }
-        })
-        return estimator(data)
+        # being the first estimate, defines the structure of the final output(Estimate)
+        estimate = Estimate(
+            data=data,
+            impact=impactCalcs['CI'](data.reportedCases, 10),
+            severeImpact=impactCalcs['CI'](data.reportedCases, 50))
+        return estimator(estimate)
 
     return wrapper
 
 
 def infectionsByRequestedTime(estimator):
     @wraps(estimator)
-    def wrapper(data):
-        # print(data)
-        currently_infected = data['impact']['currentlyInfected']
-        currently_infected_severe = data['severeImpact']['currentlyInfected']
-        timeToElapse = duration_normaliser[data['data']['periodType']](
-            data['data']['timeToElapse'])
-        data['impact'].update({
-            'infectionsByRequestedTime': impactCalcs['IBRT'](currently_infected, timeToElapse)
-        })
-        data['severeImpact'].update({
-            'infectionsByRequestedTime': impactCalcs['IBRT'](currently_infected_severe, timeToElapse)
-        })
-        return estimator(data)
+    def wrapper(estimate):
+        time = duration_normaliser[estimate.data.periodType](
+            estimate.data.timeToElapse)
+        estimate = Estimate(
+            data=estimate.data,
+            impact=impactCalcs['IBRT'](estimate.impact, time),
+            severeImpact=impactCalcs['IBRT'](estimate.severeImpact, time))
+        return estimator(estimate)
 
     return wrapper
 
 
 def severeCasesByRequestedTime(estimator):
     @wraps(estimator)
-    def wrapper(data):
-        infected_by_requested_time = data['impact']['infectionsByRequestedTime']
-        infected_by_requested_time_severe = data['severeImpact']['infectionsByRequestedTime']
-        data['impact'].update(
-            {'severeCasesByRequestedTime': impactCalcs['SCBRT'](infected_by_requested_time)})
-        data['severeImpact'].update({'severeCasesByRequestedTime': impactCalcs['SCBRT'](
-            infected_by_requested_time_severe)})
-        return estimator(data)
+    def wrapper(estimate):
+        estimate = Estimate(
+            data=estimate.data,
+            impact=impactCalcs['SCBRT'](estimate.impact),
+            severeImpact=impactCalcs['SCBRT'](estimate.severeImpact))
+        return estimator(estimate)
     return wrapper
 
 
 def hospitalBedsByRequestedTime(estimator):
     @wraps(estimator)
-    def wrapper(data):
+    def wrapper(estimate):
 
-        total_hospital_beds = data['data']['totalHospitalBeds']
-
-        severe_case_by_equested_time = data['impact']['severeCasesByRequestedTime']
-        severe_case_by_equested_time_severe = data['severeImpact']['severeCasesByRequestedTime']
-
-        data['impact'].update({
-            'hospitalBedsByRequestedTime': impactCalcs['HBBRT'](total_hospital_beds, severe_case_by_equested_time)
-        })
-
-        data['severeImpact'].update({
-            'hospitalBedsByRequestedTime': impactCalcs['HBBRT'](total_hospital_beds, severe_case_by_equested_time_severe)
-        })
-
-        return estimator(data)
+        total_hospital_beds = estimate.data.totalHospitalBeds
+        estimate = Estimate(
+            data=estimate.data,
+            impact=impactCalcs['HBBRT'](estimate.impact, total_hospital_beds),
+            severeImpact=impactCalcs['HBBRT'](estimate.severeImpact, total_hospital_beds))
+        return estimator(estimate)
     return wrapper
 
 
 def casesForICUByRequestedTime(estimator):
     @wraps(estimator)
-    def wrapper(data):
-        infections_by_requested_time = data['impact']['infectionsByRequestedTime']
-        infections_by_requested_time_severe = data['severeImpact']['infectionsByRequestedTime']
-
-        data['impact'].update({
-            'casesForICUByRequestedTime': impactCalcs['CFICUBRT'](infections_by_requested_time)
-        })
-        data['severeImpact'].update({
-            'casesForICUByRequestedTime': impactCalcs['CFICUBRT'](infections_by_requested_time_severe)
-        })
-
-        return estimator(data)
+    def wrapper(estimate):
+        estimate = Estimate(
+            data=estimate.data,
+            impact=impactCalcs['CFICUBRT'](estimate.impact),
+            severeImpact=impactCalcs['CFICUBRT'](estimate.severeImpact))
+        return estimator(estimate)
     return wrapper
 
 
 def casesForVentilatorsByRequestedTime(estimator):
     @wraps(estimator)
-    def wrapper(data):
-        infections_by_requested_time = data['impact']['infectionsByRequestedTime']
-        infections_by_requested_time_severe = data['severeImpact']['infectionsByRequestedTime']
-
-        data['impact'].update({
-            'casesForVentilatorsByRequestedTime': impactCalcs['CFVBRT'](infections_by_requested_time)
-        })
-        data['severeImpact'].update({
-            'casesForVentilatorsByRequestedTime': impactCalcs['CFVBRT'](infections_by_requested_time_severe)
-        })
-        return estimator(data)
+    def wrapper(estimate):
+        estimate = Estimate(
+            data=estimate.data,
+            impact=impactCalcs['CFVBRT'](estimate.impact),
+            severeImpact=impactCalcs['CFVBRT'](estimate.severeImpact))
+        return estimator(estimate)
     return wrapper
 
 
-def dollarInFlight(estimator):
+def dollarsInFlight(estimator):
     @wraps(estimator)
-    def wrapper(data):
-        infections_by_requested_time = data['impact']['infectionsByRequestedTime']
-        infections_by_requested_time_severe = data['severeImpact']['infectionsByRequestedTime']
-        avg_daily_income = data['data']['region']['avgDailyIncomeInUSD']
-        avg_daily_income_population = data['data']['region']['avgDailyIncomePopulation']
-        timeToElapse = duration_normaliser[data['data']['periodType']](
-            data['data']['timeToElapse'])
+    def wrapper(estimate):
+        time = duration_normaliser[estimate.data.periodType](
+            estimate.data.timeToElapse)
+        avg_daily_income = estimate.data.region.avgDailyIncomeInUSD
+        avg_daily_income_population = estimate.data.region.avgDailyIncomePopulation
 
-        impact = {
-            'dollarsInFlight': impactCalcs['DIF'](infections_by_requested_time, avg_daily_income, avg_daily_income_population, timeToElapse)
-        }
-        severeImpact = {
-            'dollarsInFlight': impactCalcs['DIF'](infections_by_requested_time_severe, avg_daily_income, avg_daily_income_population, timeToElapse)
-        }
+        estimate = Estimate(
+            data=estimate.data,
+            impact=impactCalcs['DIF'](
+                estimate.impact, avg_daily_income, avg_daily_income_population, time),
+            severeImpact=impactCalcs['DIF'](estimate.severeImpact, avg_daily_income, avg_daily_income_population, time))
+        return estimator(estimate)
+    return wrapper
 
-        data['impact'] = {**data['impact'], **impact}
-        data['severeImpact'] = {**data['severeImpact'], **severeImpact}
 
+def clean(estimator):
+    '''
+    restructure the final ouput from an Estimate namedTuple to dictionary
+    '''
+    @wraps(estimator)
+    def wrapper(estimate):
+        data = estimate._asdict()
+        data.update({
+            'data': estimate.data._asdict(),
+            'impact': estimate.impact._asdict(),
+            'severeImpact': estimate.severeImpact._asdict()
+        })
+        data['data']['region'] = estimate.data.region._asdict()
         return estimator(data)
     return wrapper
 
 
-def init(input):
-    def _impacts(estimator):
-        @wraps(estimator)
-        def wrapper(data):
-            input['data'] = data
-            return estimator(input)
-        return wrapper
-    return _impacts
+'''
+builds estimatation as that data is sequentially transformed as it passes 
+through each decorator
+'''
 
 
-@init({})
+@init
 @currentlyInfected
 @infectionsByRequestedTime
 @severeCasesByRequestedTime
 @hospitalBedsByRequestedTime
 @casesForICUByRequestedTime
 @casesForVentilatorsByRequestedTime
-@dollarInFlight
+@dollarsInFlight
+@clean
 def estimator(data):
     return data
